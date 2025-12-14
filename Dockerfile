@@ -1,4 +1,4 @@
-FROM nvcr.io/nvidia/cuda:13.0.1-devel-ubuntu24.04
+FROM nvcr.io/nvidia/cuda:13.0.2-devel-ubuntu24.04
 ARG DEBIAN_FRONTEND=noninteractive
 
 # PYTHON SETUP
@@ -105,38 +105,42 @@ ENV PYTHONPATH="${PYTHONPATH}:/workspace/blender_dev/build_bpy/bin"
 # END OF BLENDER BUILD
 
 # PROJECT SETUP AND BUILD
-## 1) Clone the repository (DGX fork)
-RUN git clone -b DGX-Spark https://github.com/dr-vij/Hunyuan3D-2.1-DGX /workspace/Hunyuan3D-2.1
-WORKDIR /workspace/Hunyuan3D-2.1
 
-## 2) Install Python dependencies (PyTorch CUDA 13.0 build first)
+## 1) Install Python dependencies (PyTorch CUDA 13.0 build first)
 RUN pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu130
 
-## 3) Speed up model downloads (Hugging Face with xet)
+## 2) Speed up model downloads (Hugging Face with xet)
 RUN pip install --no-cache-dir -U "huggingface_hub[hf_xet]"
 
-## 4) Install project dependencies
-RUN pip install -r requirements.txt
-
-## 5) Ensure python3-config symlink in the venv (required for custom_rasterizer/DifferentiableRenderer)
+## 3) Ensure python3-config symlink in the venv (required for custom_rasterizer/DifferentiableRenderer)
 # Create/update: /opt/py310/bin/python3-config -> /usr/local/bin/python3.10-config
 RUN ln -sf /usr/local/bin/python3.10-config /opt/py310/bin/python3-config
 
-## 6) Set CUDA environment (adjust CUDA version and arch as needed)
+## 4) Set CUDA environment (adjust CUDA version and arch as needed)
 # DGX Spark uses CUDA 13.0 and arch "12.1+PTX".
 ENV CUDA_HOME=/usr/local/cuda-13.0
 ENV PATH="$CUDA_HOME/bin:${PATH}"
 ENV LD_LIBRARY_PATH="$CUDA_HOME/lib64:${LD_LIBRARY_PATH}"
 ENV TORCH_CUDA_ARCH_LIST="12.1+PTX"
 
+## 5) Clone the repository (DGX fork)
+RUN git clone -b DGX-Spark https://github.com/dr-vij/Hunyuan3D-2.1-DGX /workspace/Hunyuan3D-2.1
+WORKDIR /workspace/Hunyuan3D-2.1
+
+## 6) Install project dependencies
+RUN pip install -r requirements.txt
+
 ## 7) Build and install hy3dpaint custom rasterizer
 RUN bash -lc "cd hy3dpaint/custom_rasterizer && pip install -e . --no-build-isolation"
 
-## Note: If this fails, verify that python3.10-config is correct.
-## 8) Compile the differentiable renderer
+## 8) Ensure system libraries are found first on aarch64
+ENV LD_LIBRARY_PATH="/usr/lib/aarch64-linux-gnu:${LD_LIBRARY_PATH}"
+
+## 9) Compile the differentiable renderer
+# Note: If this fails, verify that python3.10-config is correct.
 RUN bash -lc "cd hy3dpaint/DifferentiableRenderer && bash compile_mesh_painter.sh"
 
-## 9) Download ESRGAN weights
+## 10) Download ESRGAN weights
 RUN mkdir -p hy3dpaint/ckpt \
     && wget https://github.com/xinntao/Real-ESRGAN/releases/download/v0.1.0/RealESRGAN_x4plus.pth -P hy3dpaint/ckpt
 
@@ -147,10 +151,7 @@ EXPOSE 7860
 
 ## 2) Start the Gradio application on container startup
 # Assumes gradio_app.py is located at /workspace/Hunyuan3D-2.1
-# LD_PRELOAD is added for correct dependency loading on aarch64
-CMD bash -lc "cd /workspace/Hunyuan3D-2.1 && \
-  LD_PRELOAD=\"/usr/lib/aarch64-linux-gnu/libgobject-2.0.so.0:/usr/lib/aarch64-linux-gnu/libcurl.so.4:/usr/lib/aarch64-linux-gnu/libnghttp2.so.14\" \
-  python gradio_app.py --host 0.0.0.0 --port 7860"
+CMD ["python", "gradio_app.py", "--host", "0.0.0.0", "--port", "7860"]
 
 # I spent 8+ hours setting this up, with help from Google Search and JetBrains Junie
 LABEL authors="dr-vij (Viktor Grigorev)"
